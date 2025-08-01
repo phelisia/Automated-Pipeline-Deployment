@@ -29,6 +29,8 @@ except ImportError:
     print("✓ dotenv not available (normal on Railway)")
 
 app = Flask(__name__)
+PHANTOMBUSTER_API_KEY = os.getenv("PHANTOMBUSTER_API_KEY")
+PHANTOM_AGENT_ID = os.getenv("PHANTOM_AGENT_ID")
 
 # Connect to Supabase with enhanced error handling
 try:
@@ -172,6 +174,7 @@ def root():
         'status': 'ok',
         'supabase_status': 'connected' if supabase else 'disconnected',
         'supported_formats': ['JSON with resultObject', 'CSV download URL'],
+        'phantom_credentials': 'configured' if PHANTOMBUSTER_API_KEY and PHANTOM_AGENT_ID else 'missing',
         'timestamp': datetime.utcnow().isoformat()
     }), 200
 
@@ -180,8 +183,70 @@ def health():
     return jsonify({
         'status': 'ok', 
         'supabase': 'ok' if supabase else 'error',
+        'phantom_api': 'ok' if PHANTOMBUSTER_API_KEY else 'missing',
+        'phantom_agent': 'ok' if PHANTOM_AGENT_ID else 'missing',
         'timestamp': datetime.utcnow().isoformat()
     }), 200
+
+@app.route('/trigger-phantom', methods=['POST'])
+def trigger_phantom():
+    try:
+        print("=== TRIGGER PHANTOM CALLED ===")
+        
+        api_key = os.getenv('PHANTOMBUSTER_API_KEY')
+        agent_id = os.getenv('PHANTOM_AGENT_ID')
+        
+        if not api_key or not agent_id:
+            print("✗ Phantom API credentials missing")
+            return jsonify({'status': 'error', 'message': 'Phantom API credentials missing'}), 500
+        
+        print(f"✓ Using Agent ID: {agent_id}")
+        
+        # Trigger Phantom Launch via API
+        launch_url = f'https://api.phantombuster.com/api/v2/agents/launch'
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Phantombuster-Key-1': api_key
+        }
+        
+        # Get any custom arguments from the request body
+        request_data = request.json or {}
+        custom_args = request_data.get('arguments', {})
+        
+        payload = {
+            'id': agent_id,  # Phantom Agent ID
+            'argument': custom_args,  # If your Phantom has any custom inputs, add them here.
+            'saveArgument': False
+        }
+        
+        print(f"📤 Sending launch request to: {launch_url}")
+        print(f"📋 Payload: {payload}")
+        
+        response = requests.post(launch_url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code != 200:
+            print(f"✗ Phantom API Error: {response.status_code} {response.text}")
+            return jsonify({
+                'status': 'error', 
+                'message': 'Failed to trigger Phantom', 
+                'details': response.text,
+                'status_code': response.status_code
+            }), 500
+        
+        launch_data = response.json()
+        
+        print(f"✓ Phantom triggered successfully: {launch_data}")
+        
+        return jsonify({
+            'status': 'success', 
+            'message': 'Phantom agent launched successfully',
+            'launch_data': launch_data
+        }), 200
+    
+    except Exception as e:
+        print(f"✗ Error triggering Phantom: {e}")
+        return jsonify({'status': 'error', 'message': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -338,7 +403,7 @@ def internal_error(error):
     print(f"500 error: {error}")
     return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
 
-print("✓ Hybrid Flask webhook ready - supports both JSON and CSV formats!")
+print("✓ Hybrid Flask webhook ready - supports both JSON and CSV formats + Phantom triggering!")
 
 # Comment out when using gunicorn
 # if __name__ == "__main__":
