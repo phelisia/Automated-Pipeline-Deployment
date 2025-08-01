@@ -1,6 +1,9 @@
 from flask import Flask, request, jsonify
 import os
 import json
+import requests
+import csv
+import io
 from datetime import datetime
 
 # Add startup logging for Railway debugging
@@ -47,12 +50,128 @@ def calculate_engagement_rate(post):
     total_engagement = post.get('likes', 0) + post.get('comments', 0) + post.get('shares', 0) + post.get('clicks', 0)
     return round((total_engagement / impressions) * 100, 2)
 
+def download_csv_from_url(csv_url):
+    """Download CSV content from PhantomBuster URL"""
+    try:
+        print(f"📥 Downloading CSV from: {csv_url}")
+        response = requests.get(csv_url, timeout=30)
+        response.raise_for_status()
+        print(f"✓ CSV downloaded successfully, size: {len(response.content)} bytes")
+        return response.text
+    except requests.exceptions.RequestException as e:
+        print(f"✗ Error downloading CSV: {e}")
+        return None
+
+def parse_csv_content(csv_content):
+    """Parse CSV content and extract LinkedIn posts data"""
+    try:
+        print("📊 Parsing CSV content...")
+        csv_reader = csv.DictReader(io.StringIO(csv_content))
+        
+        posts = []
+        for row_num, row in enumerate(csv_reader, 1):
+            try:
+                # Clean up the row data (remove extra spaces)
+                cleaned_row = {k.strip(): v.strip() if isinstance(v, str) else v for k, v in row.items()}
+                posts.append(cleaned_row)
+                
+                if row_num <= 3:  # Log first 3 rows for debugging
+                    print(f"Row {row_num} keys: {list(cleaned_row.keys())}")
+                
+            except Exception as row_error:
+                print(f"⚠ Error processing row {row_num}: {row_error}")
+                continue
+        
+        print(f"✓ Parsed {len(posts)} posts from CSV")
+        return posts
+        
+    except Exception as e:
+        print(f"✗ Error parsing CSV: {e}")
+        return []
+
+def extract_hashtags_and_mentions(content):
+    """Extract hashtags and mentions from post content"""
+    if not content:
+        return [], []
+    
+    import re
+    hashtags = re.findall(r'#\w+', content)
+    mentions = re.findall(r'@\w+', content)
+    
+    return hashtags, mentions
+
+def process_csv_posts(posts_data):
+    """Process CSV posts data and save to Supabase"""
+    processed_count = 0
+    
+    for i, post in enumerate(posts_data, 1):
+        try:
+            print(f"Processing CSV post {i}/{len(posts_data)}")
+            
+            # Map CSV columns to our data structure (adjust these based on your CSV headers)
+            content = post.get('content') or post.get('Content') or post.get('text') or post.get('Text') or post.get('postContent') or ''
+            post_url = post.get('postUrl') or post.get('Post URL') or post.get('url') or post.get('URL') or ''
+            published_at = post.get('publishedAt') or post.get('Published At') or post.get('date') or post.get('Date') or post.get('createdAt') or ''
+            author = post.get('author') or post.get('Author') or post.get('authorName') or post.get('profileName') or ''
+            
+            # Extract engagement metrics with flexible column names
+            likes = int(post.get('likes') or post.get('Likes') or post.get('likeCount') or 0)
+            comments = int(post.get('comments') or post.get('Comments') or post.get('commentCount') or 0)
+            shares = int(post.get('shares') or post.get('Shares') or post.get('shareCount') or post.get('reposts') or 0)
+            impressions = int(post.get('impressions') or post.get('Impressions') or post.get('views') or 0)
+            
+            # Extract hashtags and mentions from content
+            hashtags, mentions = extract_hashtags_and_mentions(content)
+            
+            # Generate a unique post ID
+            import hashlib
+            post_id = post_url or hashlib.md5(f"{content[:100]}{published_at}".encode()).hexdigest()
+            
+            # Insert post data
+            post_insert = supabase.table('posts').upsert({
+                'linkedin_post_id': post_id,
+                'content': content,
+                'post_type': post.get('postType') or post.get('type') or 'post',
+                'published_at': published_at,
+                'author_id': author,
+                'hashtags': hashtags,
+                'mentions': mentions,
+                'raw_data': post
+            }).execute()
+            
+            if post_insert.data and len(post_insert.data) > 0:
+                db_post_id = post_insert.data[0]['id']
+                
+                # Insert engagement metrics
+                supabase.table('engagement_metrics').upsert({
+                    'post_id': db_post_id,
+                    'likes': likes,
+                    'comments': comments,
+                    'shares': shares,
+                    'impressions': impressions,
+                    'clicks': int(post.get('clicks') or post.get('Clicks') or 0),
+                    'engagement_rate': calculate_engagement_rate({
+                        'likes': likes, 'comments': comments, 'shares': shares, 'impressions': impressions
+                    }),
+                    'measured_at': datetime.utcnow().isoformat()
+                }).execute()
+                
+                print(f"✓ Saved CSV post {i}: {content[:50]}...")
+                processed_count += 1
+                
+        except Exception as post_error:
+            print(f"✗ Error processing CSV post {i}: {post_error}")
+            continue
+    
+    return processed_count
+
 @app.route('/')
 def root():
     return jsonify({
-        'message': 'Flask app is running on Railway!', 
+        'message': 'PhantomBuster Webhook Server - JSON & CSV Support!', 
         'status': 'ok',
         'supabase_status': 'connected' if supabase else 'disconnected',
+        'supported_formats': ['JSON with resultObject', 'CSV download URL'],
         'timestamp': datetime.utcnow().isoformat()
     }), 200
 
@@ -79,92 +198,130 @@ def webhook():
             print("✗ No JSON data received")
             return jsonify({'status': 'error', 'message': 'No JSON data received'}), 400
         
-        print("✓ Incoming Data received:", len(str(data)), "characters")
+        print("✓ Incoming Data received:", list(data.keys()))
         
-        # Check if 'resultObject' is present (PhantomBuster Data)
-        if 'resultObject' not in data:
-            print("✗ No resultObject found")
-            return jsonify({'status': 'error', 'message': 'No resultObject found'}), 400
+        # Check if this is a CSV-based webhook (new format)
+        csv_url = data.get('csvUrl') or data.get('csv_url') or data.get('downloadUrl') or data.get('resultUrl')
         
-        # Parse the resultObject string into JSON
-        try:
-            result_data = json.loads(data['resultObject'])
-            print("✓ Parsed Result Data:", len(result_data), "items")
-        except json.JSONDecodeError as e:
-            print(f"✗ JSON parsing error: {e}")
-            return jsonify({'status': 'error', 'message': f'Invalid JSON in resultObject: {str(e)}'}), 400
+        if csv_url:
+            print("🔄 Processing CSV-based webhook...")
+            
+            # Download CSV content
+            csv_content = download_csv_from_url(csv_url)
+            if not csv_content:
+                return jsonify({'status': 'error', 'message': 'Failed to download CSV'}), 400
+            
+            # Parse CSV and extract posts
+            posts_data = parse_csv_content(csv_content)
+            if not posts_data:
+                return jsonify({'status': 'error', 'message': 'No valid posts found in CSV'}), 400
+            
+            # Process CSV posts
+            processed_count = process_csv_posts(posts_data)
+            
+            print(f"✓ CSV Webhook completed: {processed_count}/{len(posts_data)} posts processed")
+            
+            return jsonify({
+                'status': 'success',
+                'message': f'CSV processed: {processed_count} out of {len(posts_data)} posts saved',
+                'processed_count': processed_count,
+                'total_count': len(posts_data),
+                'format': 'CSV'
+            }), 200
         
-        if not isinstance(result_data, list):
-            print("✗ resultObject is not a list")
-            return jsonify({'status': 'error', 'message': 'resultObject should contain a list'}), 400
-        
-        processed_items = 0
-        
-        for i, item in enumerate(result_data):
+        # Check if this is the original JSON format
+        elif 'resultObject' in data:
+            print("🔄 Processing JSON-based webhook (original format)...")
+            
+            # Parse the resultObject string into JSON
             try:
-                print(f"Processing item {i+1}/{len(result_data)}")
-                
-                # Check if it's a Company Profile Data
-                if 'companyName' in item:
-                    print(f"✓ Processing company: {item['companyName']}")
-                    supabase.table('company_profile').upsert({
-                        'name': item['companyName'],
-                        'linkedin_url': item.get('companyUrl', ''),
-                        'followers': item.get('followerCount', 0),
-                        'website': item.get('website', ''),
-                        'description': item.get('description', ''),
-                        'industry': item.get('industry', ''),
-                        'company_size': item.get('companySize', ''),
-                        'specialties': [],
-                        'location': item.get('location', ''),
-                        'fetched_at': datetime.utcnow().isoformat()
-                    }).execute()
-                    print("✓ Company Profile Saved")
-                    processed_items += 1
-                
-                # Check if it's a Post Data
-                elif 'postId' in item:
-                    print(f"✓ Processing post: {item['postId']}")
-                    post_insert = supabase.table('posts').upsert({
-                        'linkedin_post_id': item.get('postId'),
-                        'content': item.get('content', ''),
-                        'post_type': item.get('postType', ''),
-                        'published_at': item.get('publishedAt', ''),
-                        'author_id': item.get('authorId', ''),
-                        'hashtags': item.get('hashtags', []),
-                        'mentions': item.get('mentions', []),
-                        'raw_data': item
-                    }).execute()
+                result_data = json.loads(data['resultObject'])
+                print("✓ Parsed Result Data:", len(result_data), "items")
+            except json.JSONDecodeError as e:
+                print(f"✗ JSON parsing error: {e}")
+                return jsonify({'status': 'error', 'message': f'Invalid JSON in resultObject: {str(e)}'}), 400
+            
+            if not isinstance(result_data, list):
+                print("✗ resultObject is not a list")
+                return jsonify({'status': 'error', 'message': 'resultObject should contain a list'}), 400
+            
+            processed_items = 0
+            
+            for i, item in enumerate(result_data):
+                try:
+                    print(f"Processing item {i+1}/{len(result_data)}")
                     
-                    if post_insert.data and len(post_insert.data) > 0:
-                        post_id = post_insert.data[0]['id']
-                        supabase.table('engagement_metrics').insert({
-                            'post_id': post_id,
-                            'likes': item.get('likes', 0),
-                            'comments': item.get('comments', 0),
-                            'shares': item.get('shares', 0),
-                            'impressions': item.get('impressions', 0),
-                            'clicks': item.get('clicks', 0),
-                            'engagement_rate': calculate_engagement_rate(item),
-                            'measured_at': datetime.utcnow().isoformat()
+                    # Check if it's a Company Profile Data
+                    if 'companyName' in item:
+                        print(f"✓ Processing company: {item['companyName']}")
+                        supabase.table('company_profile').upsert({
+                            'name': item['companyName'],
+                            'linkedin_url': item.get('companyUrl', ''),
+                            'followers': item.get('followerCount', 0),
+                            'website': item.get('website', ''),
+                            'description': item.get('description', ''),
+                            'industry': item.get('industry', ''),
+                            'company_size': item.get('companySize', ''),
+                            'specialties': [],
+                            'location': item.get('location', ''),
+                            'fetched_at': datetime.utcnow().isoformat()
                         }).execute()
-                        print(f"✓ Post and Engagement Data Saved for Post ID: {post_id}")
+                        print("✓ Company Profile Saved")
                         processed_items += 1
+                    
+                    # Check if it's a Post Data
+                    elif 'postId' in item:
+                        print(f"✓ Processing post: {item['postId']}")
+                        post_insert = supabase.table('posts').upsert({
+                            'linkedin_post_id': item.get('postId'),
+                            'content': item.get('content', ''),
+                            'post_type': item.get('postType', ''),
+                            'published_at': item.get('publishedAt', ''),
+                            'author_id': item.get('authorId', ''),
+                            'hashtags': item.get('hashtags', []),
+                            'mentions': item.get('mentions', []),
+                            'raw_data': item
+                        }).execute()
+                        
+                        if post_insert.data and len(post_insert.data) > 0:
+                            post_id = post_insert.data[0]['id']
+                            supabase.table('engagement_metrics').insert({
+                                'post_id': post_id,
+                                'likes': item.get('likes', 0),
+                                'comments': item.get('comments', 0),
+                                'shares': item.get('shares', 0),
+                                'impressions': item.get('impressions', 0),
+                                'clicks': item.get('clicks', 0),
+                                'engagement_rate': calculate_engagement_rate(item),
+                                'measured_at': datetime.utcnow().isoformat()
+                            }).execute()
+                            print(f"✓ Post and Engagement Data Saved for Post ID: {post_id}")
+                            processed_items += 1
+                        else:
+                            print("⚠ Warning: No data returned from post insert")
                     else:
-                        print("⚠ Warning: No data returned from post insert")
-                else:
-                    print(f"⚠ Unknown item type in item {i+1}")
-                
-            except Exception as item_error:
-                print(f"✗ Error processing item {i+1}: {item_error}")
-                continue
+                        print(f"⚠ Unknown item type in item {i+1}")
+                    
+                except Exception as item_error:
+                    print(f"✗ Error processing item {i+1}: {item_error}")
+                    continue
+            
+            print(f"✓ JSON Webhook completed: {processed_items} items processed")
+            return jsonify({
+                'status': 'success', 
+                'message': f'JSON processed: {processed_items} items saved',
+                'processed_count': processed_items,
+                'format': 'JSON'
+            }), 200
         
-        print(f"✓ Webhook completed: {processed_items} items processed")
-        return jsonify({
-            'status': 'success', 
-            'message': f'Data processed successfully. {processed_items} items processed.',
-            'processed_count': processed_items
-        }), 200
+        else:
+            print("✗ No recognized data format found")
+            print("Available keys:", list(data.keys()))
+            return jsonify({
+                'status': 'error', 
+                'message': 'No CSV URL or resultObject found in webhook data',
+                'received_keys': list(data.keys())
+            }), 400
         
     except Exception as e:
         print(f"✗ Webhook error: {e}")
@@ -181,7 +338,7 @@ def internal_error(error):
     print(f"500 error: {error}")
     return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
 
-print("✓ Flask app setup complete, ready to handle requests")
+print("✓ Hybrid Flask webhook ready - supports both JSON and CSV formats!")
 
 # Comment out when using gunicorn
 # if __name__ == "__main__":
