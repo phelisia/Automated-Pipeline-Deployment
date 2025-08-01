@@ -31,6 +31,7 @@ except ImportError:
 app = Flask(__name__)
 PHANTOMBUSTER_API_KEY = os.getenv("PHANTOMBUSTER_API_KEY")
 PHANTOM_AGENT_ID = os.getenv("PHANTOM_AGENT_ID")
+session_cookie = os.getenv('LINKEDIN_SESSION_COOKIE')
 
 # Connect to Supabase with enhanced error handling
 try:
@@ -204,10 +205,15 @@ def trigger_phantom():
         
         api_key = os.getenv('PHANTOMBUSTER_API_KEY')
         agent_id = os.getenv('PHANTOM_AGENT_ID')
+        session_cookie = os.getenv('LINKEDIN_SESSION_COOKIE')
         
         if not api_key or not agent_id:
             print("✗ Phantom API credentials missing")
             return jsonify({'status': 'error', 'message': 'Phantom API credentials missing'}), 500
+        
+        if not session_cookie:
+            print("✗ LinkedIn Session Cookie is missing")
+            return jsonify({'status': 'error', 'message': 'LinkedIn Session Cookie missing in environment variables'}), 500
         
         print(f"✓ Using Agent ID: {agent_id}")
         
@@ -223,9 +229,13 @@ def trigger_phantom():
         request_data = request.json or {}
         custom_args = request_data.get('arguments', {})
         
+        # Inject session cookie automatically if not provided
+        if 'sessionCookie' not in custom_args:
+            custom_args['sessionCookie'] = session_cookie
+        
         payload = {
             'id': agent_id,  # Phantom Agent ID
-            'argument': custom_args,  # If your Phantom has any custom inputs, add them here.
+            'argument': custom_args,  # Include session cookie in arguments
             'saveArgument': False
         }
         
@@ -256,6 +266,7 @@ def trigger_phantom():
     except Exception as e:
         print(f"✗ Error triggering Phantom: {e}")
         return jsonify({'status': 'error', 'message': 'Internal server error', 'details': str(e)}), 500
+
 
 @app.route('/run-phantom', methods=['POST'])
 def run_phantom():
