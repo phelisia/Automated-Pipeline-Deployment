@@ -303,82 +303,39 @@ def run_phantom():
 @app.route('/fetch-phantom-result', methods=['POST'])
 def fetch_phantom_result():
     try:
-        print("=== FETCHING PHANTOM RESULT ===")
-        
-        PHANTOMBUSTER_API_KEY = os.getenv('PHANTOMBUSTER_API_KEY')
-        
-        if not PHANTOMBUSTER_API_KEY:
-            return jsonify({'status': 'error', 'message': 'Missing PhantomBuster API Key'}), 500
-        
-        # Get container ID from request body
-        request_data = request.json or {}
-        container_id = request_data.get('container_id') or request_data.get('containerId')
-        
-        if not container_id:
-            return jsonify({
-                'status': 'error', 
-                'message': 'Container ID is required. Pass it as {"container_id": "your-container-id"}'
-            }), 400
-        
-        print(f"📥 Fetching result for container: {container_id}")
-        
-        # Corrected API Endpoint to fetch container output object
-        api_url = f'https://api.phantombuster.com/api/v2/containers/fetch-output-object'
-        
-        headers = {
-            'Content-Type': 'application/json',
-            'X-Phantombuster-Key-1': PHANTOMBUSTER_API_KEY
-        }
-        
-        payload = {
-            'id': container_id
-        }
-        
-        print("📡 Fetching container output object...")
-        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
-        
-        if response.status_code == 400:
-            return jsonify({
-                'status': 'error',
-                'message': 'Container not found or still running',
-                'details': 'The Phantom may still be running. Wait a few minutes and try again.'
-            }), 400
-        
+        print("=== FETCHING PHANTOM RESULT VIA AGENT OUTPUT ===")
+        api_key = os.getenv('PHANTOMBUSTER_API_KEY')
+        agent_id = os.getenv('PHANTOM_AGENT_ID')
+        if not api_key or not agent_id:
+            return jsonify({'status': 'error', 'message': 'Missing Phantom API Key or Agent ID'}), 500
+
+        url = f"https://api.phantombuster.com/api/v2/agents/fetch-output"
+        headers = {'X-Phantombuster-Key-1': api_key}
+        params = {'id': agent_id}
+
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
-        result_data = response.json()
-        
-        print("✓ Container output fetched successfully!")
-        print(json.dumps(result_data, indent=2))
-        
-        # Extract CSV URL from the result (this is the correct way)
-        csv_url = None
-        if 'csvUrl' in result_data:
-            csv_url = result_data['csvUrl']
-        elif 'url' in result_data:
-            csv_url = result_data['url']
-        
+        data = response.json()
+
+        print("✓ Agent output fetched:", data)
+        csv_url = data.get('csvUrl') or data.get('resultUrl')
+        result_object = data.get('resultObject')
+
         return jsonify({
             'status': 'success',
-            'message': 'Container output fetched successfully',
-            'container_id': container_id,
+            'message': 'Agent fetch-output successful',
             'csv_url': csv_url,
-            'full_result': result_data
+            'result_object': result_object,
+            'full': data
         }), 200
-    
+
     except requests.exceptions.RequestException as e:
-        print(f"✗ API Error: {e}")
-        return jsonify({
-            'status': 'error', 
-            'message': 'Failed to fetch container output', 
-            'error': str(e)
-        }), 500
+        print("✗ Fetch error:", e)
+        return jsonify({'status': 'error', 'message': 'Failed to fetch output', 'error': str(e)}), 500
     except Exception as e:
-        print(f"✗ Error fetching result: {e}")
-        return jsonify({
-            'status': 'error', 
-            'message': 'Internal server error', 
-            'error': str(e)
-        }), 500
+        print("✗ Unexpected error:", e)
+        return jsonify({'status': 'error', 'message': 'Internal server error', 'error': str(e)}), 500
+
 
 
 @app.route('/get-phantom-status', methods=['POST'])
