@@ -33,6 +33,7 @@ PHANTOMBUSTER_API_KEY = os.getenv("PHANTOMBUSTER_API_KEY")
 PHANTOM_AGENT_ID = os.getenv("PHANTOM_AGENT_ID")
 session_cookie = os.getenv('LINKEDIN_SESSION_COOKIE')
 
+
 # Connect to Supabase with enhanced error handling
 try:
     supabase_url = os.getenv('SUPABASE_URL')
@@ -205,67 +206,54 @@ def trigger_phantom():
         
         api_key = os.getenv('PHANTOMBUSTER_API_KEY')
         agent_id = os.getenv('PHANTOM_AGENT_ID')
-        session_cookie = os.getenv('LINKEDIN_SESSION_COOKIE')
         
         if not api_key or not agent_id:
             print("✗ Phantom API credentials missing")
             return jsonify({'status': 'error', 'message': 'Phantom API credentials missing'}), 500
         
-        if not session_cookie:
-            print("✗ LinkedIn Session Cookie is missing")
-            return jsonify({'status': 'error', 'message': 'LinkedIn Session Cookie missing in environment variables'}), 500
-        
         print(f"✓ Using Agent ID: {agent_id}")
         
-        # Trigger Phantom Launch via API
-        launch_url = f'https://api.phantombuster.com/api/v2/agents/launch'
+        # Get request data
+        request_data = request.json or {}
+        custom_args = request_data.get('arguments', {})
+
+        # Inject the sessionCookie from ENV
+        linkedin_cookie = os.getenv('LINKEDIN_SESSION_COOKIE')
+        if linkedin_cookie:
+            custom_args['sessionCookie'] = linkedin_cookie
+        else:
+            print("✗ LINKEDIN_SESSION_COOKIE not found in environment variables")
+            return jsonify({'status': 'error', 'message': 'Missing LinkedIn sessionCookie in env'}), 500
         
+        payload = {
+            'id': agent_id,
+            'argument': custom_args,
+            'saveArgument': False
+        }
+        
+        launch_url = 'https://api.phantombuster.com/api/v2/agents/launch'
         headers = {
             'Content-Type': 'application/json',
             'X-Phantombuster-Key-1': api_key
         }
         
-        # Get any custom arguments from the request body
-        request_data = request.json or {}
-        custom_args = request_data.get('arguments', {})
-        
-        # Inject session cookie automatically if not provided
-        if 'sessionCookie' not in custom_args:
-            custom_args['sessionCookie'] = session_cookie
-        
-        payload = {
-            'id': agent_id,  # Phantom Agent ID
-            'argument': custom_args,  # Include session cookie in arguments
-            'saveArgument': False
-        }
-        
-        print(f"📤 Sending launch request to: {launch_url}")
-        print(f"📋 Payload: {payload}")
+        print(f"📤 Launching Phantom with payload: {payload}")
         
         response = requests.post(launch_url, headers=headers, json=payload, timeout=30)
         
         if response.status_code != 200:
             print(f"✗ Phantom API Error: {response.status_code} {response.text}")
-            return jsonify({
-                'status': 'error', 
-                'message': 'Failed to trigger Phantom', 
-                'details': response.text,
-                'status_code': response.status_code
-            }), 500
+            return jsonify({'status': 'error', 'message': 'Failed to trigger Phantom', 'details': response.text}), 500
         
         launch_data = response.json()
+        print(f"✓ Phantom launched successfully: {launch_data}")
         
-        print(f"✓ Phantom triggered successfully: {launch_data}")
-        
-        return jsonify({
-            'status': 'success', 
-            'message': 'Phantom agent launched successfully',
-            'launch_data': launch_data
-        }), 200
+        return jsonify({'status': 'success', 'message': 'Phantom agent launched successfully', 'launch_data': launch_data}), 200
     
     except Exception as e:
         print(f"✗ Error triggering Phantom: {e}")
         return jsonify({'status': 'error', 'message': 'Internal server error', 'details': str(e)}), 500
+
 
 
 @app.route('/run-phantom', methods=['POST'])
