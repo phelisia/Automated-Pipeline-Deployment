@@ -213,46 +213,67 @@ def trigger_phantom():
         
         print(f"✓ Using Agent ID: {agent_id}")
         
-        # Get request data
+        # Get any custom arguments from request body (optional)
         request_data = request.json or {}
         custom_args = request_data.get('arguments', {})
 
-        # Inject the sessionCookie from ENV
+        # Inject LinkedIn Session Cookie from ENV
         linkedin_cookie = os.getenv('LINKEDIN_SESSION_COOKIE')
         if linkedin_cookie:
             custom_args['sessionCookie'] = linkedin_cookie
         else:
             print("✗ LINKEDIN_SESSION_COOKIE not found in environment variables")
             return jsonify({'status': 'error', 'message': 'Missing LinkedIn sessionCookie in env'}), 500
-        
+
+        # Add required Phantom arguments (override if already present)
+        custom_args['numberOfLinesPerLaunch'] = 10
+        custom_args['numberMaxOfPosts'] = 20
+        custom_args['csvName'] = 'result'
+        custom_args['activitiesToScrape'] = [
+            "Post", "Article", "Comment", "Reaction", "Document", "Newsletter", "Event"
+        ]
+        custom_args['spreadsheetUrl'] = "https://www.linkedin.com/company/wentors/"
+        custom_args['userAgent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0"
+
         payload = {
-            'id': agent_id,
-            'argument': custom_args,
+            'id': agent_id,  # Phantom Agent ID
+            'argument': custom_args,  # Complete argument payload
             'saveArgument': False
         }
-        
+
         launch_url = 'https://api.phantombuster.com/api/v2/agents/launch'
         headers = {
             'Content-Type': 'application/json',
             'X-Phantombuster-Key-1': api_key
         }
-        
-        print(f"📤 Launching Phantom with payload: {payload}")
-        
+
+        print(f"📤 Sending launch request to: {launch_url}")
+        print(f"📋 Payload: {json.dumps(payload, indent=2)}")
+
         response = requests.post(launch_url, headers=headers, json=payload, timeout=30)
         
         if response.status_code != 200:
             print(f"✗ Phantom API Error: {response.status_code} {response.text}")
-            return jsonify({'status': 'error', 'message': 'Failed to trigger Phantom', 'details': response.text}), 500
+            return jsonify({
+                'status': 'error', 
+                'message': 'Failed to trigger Phantom', 
+                'details': response.text,
+                'status_code': response.status_code
+            }), 500
         
         launch_data = response.json()
-        print(f"✓ Phantom launched successfully: {launch_data}")
+        print(f"✓ Phantom triggered successfully: {launch_data}")
         
-        return jsonify({'status': 'success', 'message': 'Phantom agent launched successfully', 'launch_data': launch_data}), 200
+        return jsonify({
+            'status': 'success', 
+            'message': 'Phantom agent launched successfully',
+            'launch_data': launch_data
+        }), 200
     
     except Exception as e:
         print(f"✗ Error triggering Phantom: {e}")
         return jsonify({'status': 'error', 'message': 'Internal server error', 'details': str(e)}), 500
+
 
 
 
