@@ -175,6 +175,15 @@ def root():
         'supabase_status': 'connected' if supabase else 'disconnected',
         'supported_formats': ['JSON with resultObject', 'CSV download URL'],
         'phantom_credentials': 'configured' if PHANTOMBUSTER_API_KEY and PHANTOM_AGENT_ID else 'missing',
+        'available_endpoints': [
+            'GET /',
+            'GET /health', 
+            'POST /trigger-phantom',
+            'POST /run-phantom',
+            'POST /get-phantom-status',
+            'POST /fetch-phantom-result',
+            'POST /webhook'
+        ],
         'timestamp': datetime.utcnow().isoformat()
     }), 200
 
@@ -247,6 +256,198 @@ def trigger_phantom():
     except Exception as e:
         print(f"✗ Error triggering Phantom: {e}")
         return jsonify({'status': 'error', 'message': 'Internal server error', 'details': str(e)}), 500
+
+@app.route('/run-phantom', methods=['POST'])
+def run_phantom():
+    try:
+        print("=== RUNNING PHANTOM ===")
+        
+        # PhantomBuster API Config
+        PHANTOMBUSTER_API_KEY = os.getenv('PHANTOMBUSTER_API_KEY')
+        PHANTOM_AGENT_ID = '7741390690252670'  # <-- This is your Phantom Agent ID
+        
+        if not PHANTOMBUSTER_API_KEY:
+            return jsonify({'status': 'error', 'message': 'Missing PhantomBuster API Key'}), 500
+        
+        # API Endpoint to launch Phantom
+        api_url = f'https://api.phantombuster.com/api/v2/agents/launch'
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Phantombuster-Key-1': PHANTOMBUSTER_API_KEY
+        }
+        
+        payload = {
+            'id': PHANTOM_AGENT_ID,
+            'save': True
+        }
+        
+        print("📡 Launching Phantom via API Call...")
+        response = requests.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()
+        
+        run_result = response.json()
+        print("✓ Phantom run triggered successfully!")
+        print(json.dumps(run_result, indent=2))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Phantom run initiated.',
+            'phantom_response': run_result
+        }), 200
+    
+    except Exception as e:
+        print(f"✗ Error running Phantom: {e}")
+        return jsonify({'status': 'error', 'message': 'Failed to run Phantom', 'error': str(e)}), 500
+
+@app.route('/fetch-phantom-result', methods=['POST'])
+def fetch_phantom_result():
+    try:
+        print("=== FETCHING PHANTOM RESULT ===")
+        
+        PHANTOMBUSTER_API_KEY = os.getenv('PHANTOMBUSTER_API_KEY')
+        
+        if not PHANTOMBUSTER_API_KEY:
+            return jsonify({'status': 'error', 'message': 'Missing PhantomBuster API Key'}), 500
+        
+        # Get container ID from request body
+        request_data = request.json or {}
+        container_id = request_data.get('container_id') or request_data.get('containerId')
+        
+        if not container_id:
+            return jsonify({
+                'status': 'error', 
+                'message': 'Container ID is required. Pass it as {"container_id": "your-container-id"}'
+            }), 400
+        
+        print(f"📥 Fetching result for container: {container_id}")
+        
+        # API Endpoint to fetch container output
+        api_url = f'https://api.phantombuster.com/api/v2/containers/fetch-output'
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Phantombuster-Key-1': PHANTOMBUSTER_API_KEY
+        }
+        
+        payload = {
+            'id': container_id
+        }
+        
+        print("📡 Fetching container output...")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code == 400:
+            return jsonify({
+                'status': 'error',
+                'message': 'Container not found or still running',
+                'details': 'The Phantom may still be running. Wait a few minutes and try again.'
+            }), 400
+        
+        response.raise_for_status()
+        result_data = response.json()
+        
+        print("✓ Container output fetched successfully!")
+        print(json.dumps(result_data, indent=2))
+        
+        # Extract CSV URL from the result
+        csv_url = None
+        if 'data' in result_data:
+            # Look for CSV URL in various possible locations
+            csv_url = (result_data['data'].get('resultObject') or 
+                      result_data['data'].get('csvUrl') or 
+                      result_data['data'].get('output') or 
+                      result_data['data'].get('downloadUrl'))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Container output fetched successfully',
+            'container_id': container_id,
+            'csv_url': csv_url,
+            'full_result': result_data
+        }), 200
+    
+    except requests.exceptions.RequestException as e:
+        print(f"✗ API Error: {e}")
+        return jsonify({
+            'status': 'error', 
+            'message': 'Failed to fetch container output', 
+            'error': str(e)
+        }), 500
+    except Exception as e:
+        print(f"✗ Error fetching result: {e}")
+        return jsonify({
+            'status': 'error', 
+            'message': 'Internal server error', 
+            'error': str(e)
+        }), 500
+
+@app.route('/get-phantom-status', methods=['POST'])
+def get_phantom_status():
+    try:
+        print("=== CHECKING PHANTOM STATUS ===")
+        
+        PHANTOMBUSTER_API_KEY = os.getenv('PHANTOMBUSTER_API_KEY')
+        
+        if not PHANTOMBUSTER_API_KEY:
+            return jsonify({'status': 'error', 'message': 'Missing PhantomBuster API Key'}), 500
+        
+        # Get container ID from request body
+        request_data = request.json or {}
+        container_id = request_data.get('container_id') or request_data.get('containerId')
+        
+        if not container_id:
+            return jsonify({
+                'status': 'error', 
+                'message': 'Container ID is required. Pass it as {"container_id": "your-container-id"}'
+            }), 400
+        
+        print(f"🔍 Checking status for container: {container_id}")
+        
+        # API Endpoint to get container status
+        api_url = f'https://api.phantombuster.com/api/v2/containers/fetch'
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Phantombuster-Key-1': PHANTOMBUSTER_API_KEY
+        }
+        
+        payload = {
+            'id': container_id
+        }
+        
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        status_data = response.json()
+        
+        if 'data' in status_data:
+            container_status = status_data['data'].get('status', 'unknown')
+            print(f"✓ Container Status: {container_status}")
+            
+            return jsonify({
+                'status': 'success',
+                'container_id': container_id,
+                'container_status': container_status,
+                'is_finished': container_status in ['finished', 'success', 'completed'],
+                'is_running': container_status in ['running', 'started'],
+                'is_error': container_status in ['error', 'failed'],
+                'full_status': status_data
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Could not determine container status',
+                'response': status_data
+            }), 500
+    
+    except Exception as e:
+        print(f"✗ Error checking status: {e}")
+        return jsonify({
+            'status': 'error', 
+            'message': 'Failed to check container status', 
+            'error': str(e)
+        }), 500
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -403,7 +604,7 @@ def internal_error(error):
     print(f"500 error: {error}")
     return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
 
-print("✓ Hybrid Flask webhook ready - supports both JSON and CSV formats + Phantom triggering!")
+print("✓ Complete Flask webhook ready - supports JSON, CSV, and Phantom management!")
 
 # Comment out when using gunicorn
 # if __name__ == "__main__":
