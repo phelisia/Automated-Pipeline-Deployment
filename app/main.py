@@ -322,8 +322,8 @@ def fetch_phantom_result():
         
         print(f"📥 Fetching result for container: {container_id}")
         
-        # API Endpoint to fetch container output
-        api_url = f'https://api.phantombuster.com/api/v2/containers/fetch-output'
+        # Corrected API Endpoint to fetch container output object
+        api_url = f'https://api.phantombuster.com/api/v2/containers/fetch-output-object'
         
         headers = {
             'Content-Type': 'application/json',
@@ -334,7 +334,7 @@ def fetch_phantom_result():
             'id': container_id
         }
         
-        print("📡 Fetching container output...")
+        print("📡 Fetching container output object...")
         response = requests.post(api_url, headers=headers, json=payload, timeout=30)
         
         if response.status_code == 400:
@@ -350,14 +350,12 @@ def fetch_phantom_result():
         print("✓ Container output fetched successfully!")
         print(json.dumps(result_data, indent=2))
         
-        # Extract CSV URL from the result
+        # Extract CSV URL from the result (this is the correct way)
         csv_url = None
-        if 'data' in result_data:
-            # Look for CSV URL in various possible locations
-            csv_url = (result_data['data'].get('resultObject') or 
-                      result_data['data'].get('csvUrl') or 
-                      result_data['data'].get('output') or 
-                      result_data['data'].get('downloadUrl'))
+        if 'csvUrl' in result_data:
+            csv_url = result_data['csvUrl']
+        elif 'url' in result_data:
+            csv_url = result_data['url']
         
         return jsonify({
             'status': 'success',
@@ -381,6 +379,7 @@ def fetch_phantom_result():
             'message': 'Internal server error', 
             'error': str(e)
         }), 500
+
 
 @app.route('/get-phantom-status', methods=['POST'])
 def get_phantom_status():
